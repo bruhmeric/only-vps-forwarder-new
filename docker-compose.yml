@@ -1,0 +1,49 @@
+# Docker Compose — runs the Telegram Forwarder Bot + Dashboard on a single VPS
+#
+# Services:
+#   1. forwarder-bot     — the Telegram Forwarder Bot (polling mode)
+#   2. dashboard         — web dashboard showing bot stats & controls
+#
+# Ports exposed on the VPS:
+#   - 8080: Dashboard web UI (http://YOUR_VPS_IP:8080)
+#
+# The forwarder bot's stats server (port 8081) is internal-only (Docker network).
+#
+# Setup:
+#   1. Edit ./telegram-forwarder-bot/.env with your credentials
+#   2. docker-compose up -d --build
+#   3. Open http://YOUR_VPS_IP:8080 for the dashboard
+
+services:
+  forwarder-bot:
+    build:
+      context: ./telegram-forwarder-bot
+      dockerfile: Dockerfile
+    container_name: forwarder-bot
+    env_file:
+      - ./telegram-forwarder-bot/.env
+    restart: unless-stopped
+    volumes:
+      - forwarder-data:/app/data
+    networks:
+      - bots-network
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - forwarder-bot
+    networks:
+      - bots-network
+
+volumes:
+  forwarder-data:
+
+networks:
+  bots-network:
+    driver: bridge

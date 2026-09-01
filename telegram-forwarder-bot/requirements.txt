@@ -1,0 +1,22 @@
+# Telegram Forwarder Bot — dependencies
+# Tested with Python 3.12.0
+# The [webhooks] extra installs `tornado`, used by PTB's built-in webhook server.
+# We don't actually use PTB's built-in server in webhook mode (we use aiohttp
+# below for the health endpoint + webhook), but tornado is still pulled in
+# automatically and harmless.
+python-telegram-bot[webhooks]==21.6
+# >= 1.40 required: scrape_channel_by_ids passes drop_media_captions= to
+# forward_messages, which only exists from Telethon 1.40 onwards (older
+# versions raise TypeError on every /scrapeid call).
+Telethon>=1.40.0
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+# Custom webhook server — listens on $PORT, serves GET / (200 OK for Render
+# health check) AND POST /<bot-token-secret> (forwards updates to PTB).
+# This replaces PTB's built-in tornado server in webhook mode because PTB's
+# server returns 404 for paths other than the webhook path, which causes
+# Render's health check to fail with "Timed out waiting for successful
+# response code".
+aiohttp==3.10.10
+# Optional but recommended: speeds up Telethon's encryption significantly
+cryptg==0.4.0
