@@ -47,7 +47,14 @@ from typing import Optional
 # version must still be bumped so the dashboard knows the user has
 # rebuilt the bot image (the dashboard's EXPECTED_BOT_BUILD compares
 # against this).
-CODE_VERSION = "v9"
+#
+# v10: topic picker always goes to the user's bot DM (effective_user.id)
+# instead of effective_chat.id — fixes "picker appears in the
+# destination group instead of the bot DM" when the user sends content
+# in a group where the bot is a member. Also improved the "No topics
+# found" error with actionable instructions (/refresh, /addtopic, or
+# check Telethon session).
+CODE_VERSION = "v10"
 
 try:
     from dotenv import load_dotenv

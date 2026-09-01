@@ -252,9 +252,17 @@ async def _handle_batched_message(update, context, chat_id, user_id, msg):
                 payload=kind_payload,
                 kind="direct",
             )
-            # Send a NEW message to the user with the picker
+            # Send a NEW message to the user with the picker.
+            # IMPORTANT: always send to the user's PRIVATE chat with the
+            # bot (effective_user.id), NOT effective_chat.id. If the user
+            # sent the content in the destination group (because the bot
+            # is a member there), effective_chat.id would be the group and
+            # the picker would appear in the group — confusing and useless.
+            # The picker must always be in the bot DM so the user can tap
+            # a topic button without polluting the destination group.
             first_update = batch["first_update"]
-            await _send_picker_new(context, first_update.effective_chat.id, pending_id, label)
+            picker_chat_id = first_update.effective_user.id
+            await _send_picker_new(context, picker_chat_id, pending_id, label)
             batches.pop(key, None)
         except Exception:
             logger.exception("batch picker task failed")
@@ -354,7 +362,20 @@ async def _show_picker(update: Update, context, pending_id: str, label: str) -> 
 
 
 async def _send_picker_new(context, chat_id: int, pending_id: str, label: str) -> None:
-    """Same as _show_picker but sends a NEW message (used for albums)."""
+    """Send a NEW message with the topic picker (or single Forward button
+    for non-forum destinations) to the user's private chat with the bot.
+
+    The `chat_id` should always be the user's private chat with the bot
+    (effective_user.id) — see the callers in direct.py and link.py. This
+    ensures the picker never appears in the destination group even if the
+    user sent the content there.
+
+    AUTO-REFRESH: if the destination is a forum but no topics are cached,
+    we try to refresh via Telethon right here (instead of telling the user
+    to run /refresh manually). The get_topics() method already does a
+    refresh-on-empty-cache, but we add an explicit retry here so the
+    user sees the topic picker on the FIRST try after /setgroup.
+    """
     topics_mgr = context.bot_data["topics"]
     cfg = context.bot_data["config"]
     db = context.bot_data["db"]
@@ -374,8 +395,33 @@ async def _send_picker_new(context, chat_id: int, pending_id: str, label: str) -
     if is_forum:
         topics = await topics_mgr.get_topics(group_id)
         if not topics:
-            await context.bot.send_message(chat_id=chat_id,
-                                           text="No topics found. /refresh or /addtopic first.")
+            # Topics still empty after get_topics' own auto-refresh attempt.
+            # Give the user a clear, actionable error — don't just say "no
+            # topics found". Explain what to do.
+            us = context.bot_data.get("user_session")
+            if not us or not us.available:
+                await context.bot.send_message(chat_id=chat_id,
+                    text=(
+                        "⚠️ No topics found and the Telethon user session is "
+                        "not connected.\n\n"
+                        "The bot needs the Telethon user session to list "
+                        "forum topics (the Bot API can't do this).\n\n"
+                        "Fix:\n"
+                        "  1. Make sure SESSION_STRING is set in .env\n"
+                        "  2. Run /reconnect\n"
+                        "  3. Or add topics manually: /addtopic <title> <topic_id>"
+                    ))
+            else:
+                await context.bot.send_message(chat_id=chat_id,
+                    text=(
+                        f"⚠️ No topics found for \"{chat_title}\".\n\n"
+                        "Try:\n"
+                        "  • /refresh — re-fetch topics via Telethon\n"
+                        "  • /addtopic <title> <topic_id> — add a topic manually\n"
+                        "  • Make sure your user account is a member of the "
+                        "destination group and that it actually has topics "
+                        "enabled (it's a forum/supergroup with topics on)"
+                    ))
             return
         keyboard = topics_mgr.build_keyboard(pending_id, topics)
         await context.bot.send_message(chat_id=chat_id, text=label, reply_markup=keyboard)
