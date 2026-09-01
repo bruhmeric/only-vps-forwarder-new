@@ -697,10 +697,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                              'the bot container. Most likely cause: the ' +
                              'bot container is not running, or the Docker ' +
                              'network is misconfigured, or the bot is not ' +
-                             'listening on port 8081.\n' +
-                             'Check:\n' +
-                             '  docker ps  (is forwarder-bot running?)\n' +
-                             '  docker logs forwarder-bot\n' +
+                             'listening on port 8081.\\n' +
+                             'Check:\\n' +
+                             '  docker ps  (is forwarder-bot running?)\\n' +
+                             '  docker logs forwarder-bot\\n' +
                              '  docker network inspect bots-network';
                 } else {
                     detail = 'Error detail: ' + esc(diag.last_error || '');
@@ -738,7 +738,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             banner.innerHTML =
                 '<strong>' + title + '</strong><br>' +
                 'Bot endpoint: <span class="diag-url">' + esc(botUrl) + '</span><br>' +
-                (detail ? '<div class="diag-detail">' + detail.replace(/\n/g, '<br>') + '</div>' : '') +
+                (detail ? '<div class="diag-detail">' + detail.replace(/\\n/g, '<br>') + '</div>' : '') +
                 (timing ? '<div class="diag-detail">' + esc(timing) + '</div>' : '') +
                 '<div class="diag-detail">Test directly: <code>curl ' +
                 esc(window.location.origin) + '/api/diag</code></div>';
@@ -907,7 +907,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     ? 'RUNNING (' + active.length + ')' : 'RUNNING';
                 let html = active.map(jobCard).join('');
                 if (active.length > 1) {
-                    html += '<div class="btn-row"><button class="btn btn-stop" onclick="stopScrape(\'all\')">Stop All Jobs</button></div>';
+                    html += '<div class="btn-row"><button class="btn btn-stop" onclick="stopScrape(&#39;all&#39;)">Stop All Jobs</button></div>';
                 }
                 content.innerHTML = html;
             } else {
@@ -1119,7 +1119,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 banner.innerHTML =
                     '<strong>❌ Dashboard is stuck: the first /api/stats ' +
                     'request never completed.</strong><br>' +
-                    'The dashboard HTML loaded, but the browser\'s fetch ' +
+                    'The dashboard HTML loaded, but the browser fetch ' +
                     'to <code>/api/stats</code> is hanging (no response ' +
                     'after 15 seconds). This is NOT a bot problem — it ' +
                     'usually means a reverse proxy (nginx, Cloudflare, ' +
