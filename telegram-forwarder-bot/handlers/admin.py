@@ -994,6 +994,16 @@ def _build_scrape_live_text(context, started_at: float, job: dict | None = None)
         else:
             eta_str = f"\nETA:       {eta_sec:.0f}s"
 
+    # Live clock: a sub-second timestamp that changes EVERY tick so the
+    # message text is ALWAYS different (Telegram rejects identical edits
+    # with "message is not modified"). Without this, a long download on a
+    # private channel (10-60+ seconds with no count change) makes the
+    # message look FROZEN — the ticker fires every 2s but the text is
+    # byte-identical so the edit is silently dropped. The clock guarantees
+    # the text changes on every tick, so the user always sees a live
+    # updating message even when the counts are momentarily static.
+    clock = time.strftime("%H:%M:%S", time.localtime())
+
     return (
         f"{title}\n"
         f"{activity}\n\n"
@@ -1010,6 +1020,7 @@ def _build_scrape_live_text(context, started_at: float, job: dict | None = None)
         f"Last ID:   {last_msg_id}"
         f"{idle_str}"
         f"{eta_str}"
+        f"\n🕐 {clock}"
     )
 
 

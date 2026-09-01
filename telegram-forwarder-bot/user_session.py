@@ -2081,8 +2081,25 @@ class UserSession:
             THIS level (send_to_destination retries internally too). The
             old code slept the FULL server request (often 15-30 min) exactly
             once; this loop keeps the countdown and /stop_scrape cycling and
-            resumes sending as soon as Telegram lets us."""
+            resumes sending as soon as Telegram lets us.
+
+            LIVE STATUS: we fire stats_callback (a) right after in_flight
+            increments, (b) after each flood-wait cycle, and (c) in the
+            finally block after the send settles. This is critical for
+            private channels where send_to_destination falls back to the
+            slow download+re-upload path — without the pre-send callback,
+            the ticker shows the same counts for 10-60+ seconds during a
+            large download and the bot message looks FROZEN even though
+            the bot is actively working."""
             result["in_flight"] += 1
+            # Fire stats_callback IMMEDIATELY so the ticker shows
+            # "In-flight: 1, [SENDING] 1 item(s) in flight" before the
+            # send starts — not 10-60 seconds later when it finishes.
+            if stats_callback:
+                try:
+                    await stats_callback(result)
+                except Exception:
+                    pass
             try:
                 # Check cancellation before sending
                 if cancel_event and cancel_event.is_set():
@@ -2111,6 +2128,13 @@ class UserSession:
                         # Capped, visible wait (live countdown; 10-min cap)
                         # then retry the SAME send.
                         result["flood_waits"] += 1
+                        # Fire stats_callback so the ticker immediately sees
+                        # the updated flood_waits counter + last_update.
+                        if stats_callback:
+                            try:
+                                await stats_callback(result)
+                            except Exception:
+                                pass
                         flood_retries += 1
                         if flood_retries > 4:
                             logger.warning(

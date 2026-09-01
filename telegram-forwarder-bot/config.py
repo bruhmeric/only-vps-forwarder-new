@@ -51,10 +51,22 @@ from typing import Optional
 # v10: topic picker always goes to the user's bot DM (effective_user.id)
 # instead of effective_chat.id — fixes "picker appears in the
 # destination group instead of the bot DM" when the user sends content
-# in a group where the bot is a member. Also improved the "No topics
-# found" error with actionable instructions (/refresh, /addtopic, or
-# check Telethon session).
-CODE_VERSION = "v10"
+# in a group where the bot is a member.
+#
+# v11: sticky DEFAULT TOPIC feature. New commands /settopic, /topic,
+# /cleartopic. Once set, ALL forwards go to that topic automatically
+# with ZERO taps. /scrape passes the default topic_id to
+# scrape_channel. /scrapeid's clean path now accepts a topic_id and
+# is auto-triggered when a default topic is set.
+#
+# v12: /scrape progress now updates on the bot message DURING long
+# sends on private channels. Fix: (a) fire stats_callback immediately
+# after in_flight increments so the ticker shows "In-flight: 1,
+# [SENDING]" before the send starts; (b) fire it after each flood-wait
+# cycle; (c) add a live clock (HH:MM:S) to the status text so it
+# ALWAYS changes every tick — Telegram can never reject the edit as
+# "not modified".
+CODE_VERSION = "v12"
 
 try:
     from dotenv import load_dotenv
