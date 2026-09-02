@@ -252,9 +252,15 @@ async def _handle_batched_message(update, context, chat_id, user_id, msg):
                 payload=kind_payload,
                 kind="direct",
             )
-            # Send a NEW message to the user with the picker
+            # Send a NEW message to the user with the picker.
+            # IMPORTANT: always send to the user's PRIVATE chat with the
+            # bot (effective_user.id), NOT effective_chat.id. If the user
+            # sent the content in the destination group (because the bot
+            # is a member there), effective_chat.id would be the group and
+            # the picker would appear in the group — confusing and useless.
             first_update = batch["first_update"]
-            await _send_picker_new(context, first_update.effective_chat.id, pending_id, label)
+            picker_chat_id = first_update.effective_user.id
+            await _send_picker_new(context, picker_chat_id, pending_id, label)
             batches.pop(key, None)
         except Exception:
             logger.exception("batch picker task failed")
@@ -367,6 +373,17 @@ async def _send_picker_new(context, chat_id: int, pending_id: str, label: str) -
                                        text="No destination group set. Use /setgroup <group_id>.")
         return
 
+    # ── Check for a sticky default topic. If set, auto-forward directly
+    # with no picker — the whole point of the default-topic feature.
+    from handlers.admin import _get_default_topic
+    default_tid, default_title = await _get_default_topic(context)
+    if default_tid:
+        await _auto_forward_to_default(
+            context, chat_id, pending_id, group_id, default_tid, default_title
+        )
+        return
+
+    # No default topic — fall through to the normal picker flow.
     # Check if destination is a forum
     is_forum = await _check_destination_forum(context, group_id)
     chat_title = context.bot_data.get("destination_chat_title") or f"Chat {group_id}"
@@ -389,6 +406,120 @@ async def _send_picker_new(context, chat_id: int, pending_id: str, label: str) -
             [InlineKeyboardButton(text="Cancel", callback_data=f"cancel:{pending_id}")],
         ])
         await context.bot.send_message(chat_id=chat_id, text=label, reply_markup=keyboard)
+
+
+async def _auto_forward_to_default(context, chat_id: int, pending_id: str,
+                                     group_id: int, topic_id: int,
+                                     topic_title: str) -> None:
+    """Auto-forward a pending forward to the sticky default topic — no
+    picker shown. This is the zero-tap path that /settopic enables."""
+    db = context.bot_data["db"]
+    pending = await db.get_pending(pending_id)
+    if not pending:
+        await context.bot.send_message(chat_id=chat_id,
+                                        text="This forward expired. Send the content again.")
+        return
+
+    payload = pending["payload"]
+    kind = pending["kind"]
+    src_chat_id = pending["source_chat_id"]
+    src_msg_id = pending["source_message_id"]
+
+    is_album = (kind == "direct" and payload.get("kind") == "album")
+    is_link_direct = (kind == "link" and payload.get("direct_send") is True)
+    target_label = f"topic \"{topic_title}\""
+    if is_album:
+        n_media = len(payload.get("media_items") or [])
+        n_text = len(payload.get("text_items") or [])
+        if n_media:
+            status_text = f"Forwarding {n_media} media item(s) to {target_label}..."
+        else:
+            status_text = f"Forwarding {n_text} text item(s) to {target_label}..."
+    elif is_link_direct:
+        n_msgs = len(payload.get("source_message_ids") or [])
+        if n_msgs > 1:
+            status_text = f"📡 Forwarding {n_msgs} message(s) to {target_label} via Telethon..."
+        else:
+            media_type = (payload.get("media_types") or ["message"])[0]
+            status_text = f"📡 Forwarding 1 {media_type} to {target_label} via Telethon..."
+    else:
+        status_text = f"Forwarding to {target_label}..."
+
+    status_msg = await context.bot.send_message(chat_id=chat_id, text=status_text)
+
+    async def _edit(text: str):
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_msg.message_id, text=text
+            )
+        except Exception as e:
+            err = str(e).lower()
+            if "not modified" not in err:
+                logger.debug("status edit failed: %s", e)
+
+    try:
+        if kind == "direct":
+            if is_album:
+                await _forward_album(context, payload, group_id, topic_id)
+            else:
+                await _forward_single(context, src_chat_id, src_msg_id,
+                                       group_id, topic_id)
+        elif kind == "link":
+            import time as _time
+            last_update = {"time": 0.0, "text": "", "first": True}
+
+            async def progress_cb(sent_bytes: int, total_bytes: int, label: str):
+                now = _time.time()
+                if total_bytes > 0:
+                    pct = (sent_bytes / total_bytes) * 100
+                    sent_mb = sent_bytes / (1024 * 1024)
+                    total_mb = total_bytes / (1024 * 1024)
+                    text = (f"📡 {label}\n\n"
+                            f"Progress: {pct:.1f}%\n"
+                            f"{sent_mb:.2f} / {total_mb:.2f} MB")
+                else:
+                    text = f"📡 {label}..."
+                if text == last_update["text"]:
+                    return
+                if not last_update["first"]:
+                    if now - last_update["time"] < 0.5:
+                        return
+                last_update["first"] = False
+                last_update["time"] = now
+                last_update["text"] = text
+                try:
+                    await _edit(text)
+                except Exception:
+                    pass
+
+            await _forward_link(context, payload, group_id, topic_id,
+                                progress_callback=progress_cb)
+    except Exception as e:
+        logger.exception("auto-forward failed")
+        await _edit(f"❌ Forward failed: {e}")
+        return
+
+    await db.delete_pending(pending_id)
+
+    if is_album:
+        n_media = len(payload.get("media_items") or [])
+        n_text = len(payload.get("text_items") or [])
+        parts = []
+        if n_media:
+            parts.append(f"{n_media} media item(s)")
+        if n_text:
+            parts.append(f"{n_text} text item(s)")
+        summary = " + ".join(parts) if parts else "items"
+        done_text = f"✅ Done — {summary} sent to {target_label}."
+    else:
+        done_text = f"✅ Done — sent to {target_label}."
+
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=status_msg.message_id, text=done_text,
+        )
+    except Exception:
+        await context.bot.send_message(chat_id=chat_id, text=done_text)
 
 
 # ---------- callback handler (topic button tapped) ----------

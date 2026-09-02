@@ -3000,6 +3000,7 @@ class UserSession:
         flood_break_every: int = 500,
         flood_break_seconds: int = 300,
         phase_state: dict | None = None,
+        topic_id: int | None = None,
     ) -> dict:
         """Resend (not forward) messages by ID range, with caption /
         text cleanup.
@@ -3148,7 +3149,7 @@ class UserSession:
                                 source_chat_id=source_entity,
                                 source_message_ids=[msg.id],
                                 dest_chat_id=dest_entity,
-                                topic_id=None,
+                                topic_id=topic_id,
                                 progress_callback=None,
                                 custom_caption=cleaned,
                                 source_messages=[msg],

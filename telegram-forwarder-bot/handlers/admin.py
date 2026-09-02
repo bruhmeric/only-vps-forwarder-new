@@ -109,6 +109,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/topics         — list currently-known topics (forum only)\n"
         "/addtopic <title> <id>  — add a topic manually (forum only)\n"
         "/deltopic <id>  — remove a manually-added topic\n"
+        "/settopic       — 📌 pick a DEFAULT topic — all forwards go here automatically (no picker each time)\n"
+        "/topic          — show the current default topic\n"
+        "/cleartopic     — clear the default topic (forwards will ask each time)\n"
         "/status         — show bot status (Telethon, group, topics)\n"
         "/whoami         — show your Telegram user ID + admin status\n"
         "/test_link <url>  — diagnostic: test fetching a t.me link\n"
@@ -360,6 +363,168 @@ async def cmd_deltopic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(f"Removed topic override {topic_id}.")
 
 
+# ── Default topic (sticky destination) ──────────────────────────────────
+# A "default topic" is a topic that ALL forwards go to automatically —
+# no picker is shown. Set with /settopic, clear with /cleartopic.
+# Stored in runtime_config: default_topic_id (int, 0=none), default_topic_title (str).
+
+
+async def _get_default_topic(context) -> tuple[int | None, str | None]:
+    """Return (topic_id, title) of the sticky default topic, or
+    (None, None) if no default is set."""
+    db = context.bot_data.get("db")
+    if not db:
+        return None, None
+    try:
+        tid_s = await db.get_runtime("default_topic_id")
+        if not tid_s:
+            return None, None
+        tid = int(tid_s)
+        if tid <= 0:
+            return None, None
+        title = await db.get_runtime("default_topic_title") or f"topic {tid}"
+        return tid, title
+    except Exception:
+        return None, None
+
+
+async def _set_default_topic(context, topic_id: int, title: str) -> None:
+    db = context.bot_data.get("db")
+    if not db:
+        return
+    await db.set_runtime("default_topic_id", str(int(topic_id)))
+    await db.set_runtime("default_topic_title", str(title)[:200])
+
+
+async def _clear_default_topic(context) -> None:
+    db = context.bot_data.get("db")
+    if not db:
+        return
+    await db.set_runtime("default_topic_id", "0")
+    await db.set_runtime("default_topic_title", "")
+
+
+async def cmd_settopic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show a topic picker; tapping a topic sets it as the sticky default."""
+    cfg = context.bot_data["config"]
+    if not cfg.is_admin(update.effective_user.id):
+        return
+    db = context.bot_data["db"]
+    group_id = cfg.destination_group_id
+    if group_id is None:
+        v = await db.get_runtime("destination_group_id")
+        group_id = int(v) if v else None
+    if group_id is None:
+        await update.effective_message.reply_text("No destination group set. /setgroup <id> first.")
+        return
+
+    from handlers.direct import _check_destination_forum
+    is_forum = await _check_destination_forum(context, group_id)
+    if not is_forum:
+        chat_title = context.bot_data.get("destination_chat_title") or f"Chat {group_id}"
+        await update.effective_message.reply_text(
+            f"Destination \"{chat_title}\" is NOT a forum (no topics). "
+            f"All forwards go to the chat directly. Use /cleartopic if you "
+            f"previously set a default topic."
+        )
+        return
+
+    topics = await context.bot_data["topics"].get_topics(group_id)
+    if not topics:
+        await update.effective_message.reply_text(
+            "No topics found. Run /refresh first, or /addtopic <title> <id>."
+        )
+        return
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for t in topics:
+        title = t["title"]
+        if len(title) > 30:
+            title = title[:27] + "..."
+        cb_title = title[:40]
+        row.append(InlineKeyboardButton(
+            text=title,
+            callback_data=f"settopic:{t['id']}:{cb_title}",
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(
+        text="Clear default (ask each time)",
+        callback_data="settopic:0:clear",
+    )])
+    keyboard = InlineKeyboardMarkup(rows)
+    await update.effective_message.reply_text(
+        "Pick a DEFAULT topic — all future forwards will go here "
+        "automatically (no picker each time). Use /cleartopic to undo.",
+        reply_markup=keyboard,
+    )
+
+
+async def settopic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Callback for the /settopic picker."""
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = (q.data or "").split(":", 2)
+    if len(data) < 2:
+        return
+    try:
+        topic_id = int(data[1])
+    except ValueError:
+        return
+    title = data[2] if len(data) >= 3 else f"topic {topic_id}"
+
+    if topic_id <= 0:
+        await _clear_default_topic(context)
+        await q.edit_message_text(
+            "✅ Default topic CLEARED. Forwards will now ask you to pick "
+            "a topic each time."
+        )
+        return
+
+    await _set_default_topic(context, topic_id, title)
+    await q.edit_message_text(
+        f"✅ Default topic set to \"{title}\" (id {topic_id}).\n\n"
+        f"All future forwards — direct sends, link forwards, /scrape, "
+        f"/scrapeid — will go to this topic automatically.\n\n"
+        f"Use /topic to view. Use /cleartopic to undo."
+    )
+
+
+async def cmd_cleartopic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = context.bot_data["config"]
+    if not cfg.is_admin(update.effective_user.id):
+        return
+    await _clear_default_topic(context)
+    await update.effective_message.reply_text(
+        "✅ Default topic cleared. Forwards will now ask you to pick a "
+        "topic each time."
+    )
+
+
+async def cmd_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = context.bot_data["config"]
+    if not cfg.is_admin(update.effective_user.id):
+        return
+    tid, title = await _get_default_topic(context)
+    if tid is None:
+        await update.effective_message.reply_text(
+            "No default topic set. Use /settopic to pick one."
+        )
+        return
+    await update.effective_message.reply_text(
+        f"📌 Default topic: \"{title}\" (id {tid})\n\n"
+        f"All forwards go here automatically. Use /settopic to change, "
+        f"/cleartopic to clear."
+    )
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.bot_data["config"]
     db = context.bot_data["db"]
@@ -383,11 +548,18 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if group_id is not None:
         topics_count = len(await context.bot_data["topics"].get_topics(int(group_id)))
 
+    # Show the sticky default topic if one is set
+    default_tid, default_title = await _get_default_topic(context)
+    default_topic_line = (
+        f"\"{default_title}\" (id {default_tid})" if default_tid else "(not set — picker shown each time)"
+    )
+
     msg = (
         f"Bot status:\n"
         f"• Telethon user session: {telethon_status}\n"
         f"• Destination group: {group_id or '(not set)'}\n"
         f"• Known topics: {topics_count}\n"
+        f"• Default topic: {default_topic_line}\n"
         f"• Admin whitelist: {len(cfg.admin_ids)} user(s)"
     )
     await update.effective_message.reply_text(msg)
@@ -1037,7 +1209,12 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
     countdown, so it CHANGES every tick — the edit goes through and the
     user sees the countdown ticking. When nothing changed, Telegram replies
     "message is not modified", which the edit helper silently ignores.
+
+    FIRST-TICK FORCE: the very first tick uses force=True so the user sees
+    the live status immediately (within `interval` seconds of starting),
+    not after waiting for the rate limiter to allow it.
     """
+    first_tick = True
     while True:
         try:
             await asyncio.sleep(interval)
@@ -1055,9 +1232,13 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
                     pass
                 break
             try:
+                # First tick: force the edit so the user sees the live
+                # status immediately. Subsequent ticks use force=False
+                # and rely on the rate limiter + the changing clock text.
                 await edit_fn(_build_scrape_live_text(context, started_at,
                                                       job=job),
-                              force=False)
+                              force=first_tick)
+                first_tick = False
             except Exception:
                 pass
         except asyncio.CancelledError:
@@ -1474,10 +1655,14 @@ async def cmd_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         try:
             # Load the custom_caption setting (None=original, ""=strip, "<text>"=custom)
             custom_caption = await _get_custom_caption(context)
+            # Use the sticky default topic if set (via /settopic) and the
+            # scrape is NOT going to Saved Messages.
+            default_tid, _default_title = await _get_default_topic(context)
+            scrape_topic_id = default_tid if not send_to_saved else None
             scrape_result = await user_session.scrape_channel(
                 source_chat_ref=int(parsed.chat_ref) if parsed.kind == "private" else parsed.chat_ref,
                 dest_chat_id=dest_chat_id,
-                topic_id=None,  # scraper doesn't support topics yet (use /saved for that)
+                topic_id=scrape_topic_id,
                 reverse=oldest_first,
                 min_id=resume_min_id,
                 max_id=resume_max_id,
@@ -2342,7 +2527,18 @@ async def cmd_scrapeid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # but can strip links + ALL captions + the forwarded-from
             # header that forward_messages cannot). Plain mode uses
             # the fast forward_messages path (100 IDs per call).
-            if do_clean:
+            #
+            # TOPIC SUPPORT: the fast forward_messages path CANNOT target
+            # a topic. The clean path CAN. So when a sticky default topic
+            # is set (via /settopic) and the scrape is NOT going to Saved
+            # Messages, we FORCE the clean path so the media lands in the
+            # chosen topic.
+            default_tid, _default_title = await _get_default_topic(context)
+            force_clean_for_topic = bool(default_tid) and not send_to_saved and not do_clean
+            effective_clean = do_clean or force_clean_for_topic
+            scrape_topic_id = default_tid if not send_to_saved else None
+
+            if effective_clean:
                 scrape_result = await user_session.scrape_channel_by_ids_clean(
                     source_chat_ref=int(parsed.chat_ref) if parsed.kind == "private" else parsed.chat_ref,
                     dest_chat_id=dest_chat_id,
@@ -2356,6 +2552,7 @@ async def cmd_scrapeid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     flood_break_every=cfg.flood_break_every,
                     flood_break_seconds=cfg.flood_break_seconds,
                     phase_state=phase_state,
+                    topic_id=scrape_topic_id,
                 )
             else:
                 scrape_result = await user_session.scrape_channel_by_ids(
@@ -2455,6 +2652,9 @@ def register_admin_handlers(app) -> None:
     app.add_handler(CommandHandler("topics", cmd_topics))
     app.add_handler(CommandHandler("addtopic", cmd_addtopic))
     app.add_handler(CommandHandler("deltopic", cmd_deltopic))
+    app.add_handler(CommandHandler("settopic", cmd_settopic))
+    app.add_handler(CommandHandler("topic", cmd_topic))
+    app.add_handler(CommandHandler("cleartopic", cmd_cleartopic))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("whoami", cmd_whoami))
     app.add_handler(CommandHandler("info", cmd_info))
@@ -2467,3 +2667,5 @@ def register_admin_handlers(app) -> None:
     app.add_handler(CommandHandler("caption", cmd_caption))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("reconnect", cmd_reconnect))
+    # Callback for the /settopic picker (sets/clears the sticky default topic).
+    app.add_handler(CallbackQueryHandler(settopic_callback, pattern=r"^settopic:"))

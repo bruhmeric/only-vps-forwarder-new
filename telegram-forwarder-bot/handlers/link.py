@@ -204,12 +204,14 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         label = "Fetched message — pick a destination:"
 
-    # Use the same picker logic as direct forward — handles both forum and non-forum
-    # Note: For private chats, the chat_id equals the user's id.
+    # Use the same picker logic as direct forward — handles both forum and non-forum.
+    # IMPORTANT: always send the picker to the user's PRIVATE chat with the bot
+    # (effective_user.id), NOT effective_chat.id. If the user sent the link in
+    # the destination group (because the bot is a member there), the picker
+    # would appear in the group instead of the bot DM.
     from handlers.direct import _send_picker_new
-    # The user sent the link in a private chat with the bot, so chat_id == user_id
-    # _send_picker_new sends a NEW message (doesn't reply to the original link)
-    await _send_picker_new(context, update.effective_chat.id, pending_id, label)
+    picker_chat_id = update.effective_user.id
+    await _send_picker_new(context, picker_chat_id, pending_id, label)
 
 
 async def _download_media(user_session: UserSession, msg, tmp_dir: str, idx: int) -> tuple[Optional[dict], Optional[str]]:
