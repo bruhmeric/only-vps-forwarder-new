@@ -80,7 +80,23 @@ from typing import Optional
 # uses force=True so milestone status_callback edits can never block
 # it. stats_callback (per-message/per-batch) still updates
 # job["status"] for the ticker to render.
-CODE_VERSION = "v13"
+#
+# v14: DIAGNOSTIC LIGHT — the #1 reason the user couldn't see WHY the
+# bot message was stuck was silent error swallowing: (a) the ticker's
+# inner `except Exception: pass` (admin.py ~1248) swallowed ALL
+# exceptions from edit_fn with zero logging — if status_msg.edit_text
+# raised "Message to edit not found" or any other error, the user saw
+# nothing in docker logs and the message stayed stuck forever; (b)
+# cmd_scrapeid's `_edit_status` only logged "too many requests" and
+# silently swallowed EVERY other error (including "not modified" and
+# real errors) — compare to cmd_scrape's `_edit_telegram_message_safe`
+# which DOES log. Fix: (1) both ticker bare-except blocks now log the
+# error with the job_id; (2) `_edit_status` now logs non-"not modified"
+# errors, matching `_edit_telegram_message_safe`; (3) the ticker logs
+# "📈 Status ticker started for job X" at startup and "📈 ticker tick
+# #N" for the first 3 successful edits — so the user can verify the
+# ticker is running and edits are succeeding by checking docker logs.
+CODE_VERSION = "v14"
 
 try:
     from dotenv import load_dotenv

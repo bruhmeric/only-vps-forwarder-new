@@ -1222,6 +1222,9 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
     edits — the 2s interval is safe for Telegram's rate limit, and the
     status_lock serializes concurrent edits so there's no race.
     """
+    logger.info("📈 Status ticker started for job %s (interval=%.1fs)",
+                job.get("job_id") if job else "?", interval)
+    _tick_count = 0
     while True:
         try:
             await asyncio.sleep(interval)
@@ -1235,8 +1238,9 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
                     await edit_fn(_build_scrape_live_text(context, started_at,
                                                           job=job),
                                   force=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("ticker final edit failed: %s: %s",
+                                   type(e).__name__, e)
                 break
             try:
                 # Always force=True so milestone status_callback edits
@@ -1245,8 +1249,23 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
                 await edit_fn(_build_scrape_live_text(context, started_at,
                                                       job=job),
                               force=True)
-            except Exception:
-                pass
+                _tick_count += 1
+                # Log the first 3 ticks so the user can verify the ticker
+                # is running and see what text it generates.
+                if _tick_count <= 3:
+                    logger.info("📈 ticker tick #%d for job %s — edit OK",
+                                _tick_count,
+                                job.get("job_id") if job else "?")
+            except Exception as e:
+                # CRITICAL: this was a bare `except Exception: pass` which
+                # silently swallowed ALL errors — the user would see nothing
+                # in docker logs and the message would stay stuck forever.
+                # Now we log the error so the user can see WHY the edit
+                # fails (e.g. "Message to edit not found", "chat not found",
+                # a PTB internal error, etc.).
+                logger.warning("ticker edit failed for job %s: %s: %s",
+                                job.get("job_id") if job else "?",
+                                type(e).__name__, e)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -2455,10 +2474,19 @@ async def cmd_scrapeid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await status_msg.edit_text(text)
             except Exception as e:
                 err_str = str(e).lower()
-                if "too many requests" in err_str or "retry after" in err_str:
+                if "not modified" in err_str:
+                    pass
+                elif "too many requests" in err_str or "retry after" in err_str:
                     # Back off — editing too fast; ticker will catch up
                     last_edit_time["time"] = now + 3.0
-                # "not modified" and everything else: ignore, never fatal
+                    logger.warning("status: rate-limited edit; backing off 3s")
+                else:
+                    # CRITICAL: this was previously a bare silent swallow —
+                    # the user would see NOTHING in docker logs when the
+                    # edit failed. Now we log the error so the user can see
+                    # why the message doesn't update.
+                    logger.warning("status: edit_text failed: %s: %s",
+                                   type(e).__name__, e)
 
     # Live status ticker (shared with /scrape): renders THIS job's counts
     # PLUS the active wait phase with a ticking countdown + liveness line.

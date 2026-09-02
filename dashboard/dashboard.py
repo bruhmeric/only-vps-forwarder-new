@@ -38,7 +38,7 @@ NO_STORE = {"Cache-Control": "no-store, must-revalidate"}
 # one container is running stale code (classic cause of "dashboard
 # doesn't update": docker-compose up -d was run WITHOUT --build) and the
 # dashboard shows a rebuild banner.
-EXPECTED_BOT_BUILD = "v13"
+EXPECTED_BOT_BUILD = "v14"
 
 # Shared outbound HTTP session (reused across polls instead of a new
 # connection every 3s) and a generous timeout: a busy bot can take a
@@ -525,7 +525,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <script>
-        const EXPECTED_BOT_BUILD = 'v13';
+        const EXPECTED_BOT_BUILD = 'v14';
         // Last good /stats payload + when it arrived. On transient fetch
         // failures we keep rendering it (with a "reconnecting" pill) for
         // up to 15s instead of instantly blanking everything to "Bot
