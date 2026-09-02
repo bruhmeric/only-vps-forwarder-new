@@ -8,7 +8,7 @@ import time
 import unicodedata
 
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
+from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
 logger = logging.getLogger(__name__)
 
