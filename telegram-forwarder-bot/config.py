@@ -66,7 +66,21 @@ from typing import Optional
 # cycle; (c) add a live clock (HH:MM:S) to the status text so it
 # ALWAYS changes every tick — Telegram can never reject the edit as
 # "not modified".
-CODE_VERSION = "v12"
+#
+# v13: the periodic "📊 Scraping in progress..." / "📊 ID-based forward
+# in progress..." status_callback that fired every 1-2s has been
+# REMOVED from scrape_channel, scrape_channel_by_ids, and
+# scrape_channel_by_ids_clean. It conflicted with the 2s status ticker:
+# each force-edit reset last_edit_time, which blocked the ticker's
+# non-force edits via the 1.5s rate limiter — so the bot message
+# showed the static status_callback text and NEVER updated with the
+# live ticker (clock, progress bar, in-flight count), even though the
+# dashboard (which reads job["status"] directly) showed live progress.
+# The ticker is now the SOLE editor of the status message and ALWAYS
+# uses force=True so milestone status_callback edits can never block
+# it. stats_callback (per-message/per-batch) still updates
+# job["status"] for the ticker to render.
+CODE_VERSION = "v13"
 
 try:
     from dotenv import load_dotenv

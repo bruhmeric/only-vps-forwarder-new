@@ -1213,8 +1213,15 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
     FIRST-TICK FORCE: the very first tick uses force=True so the user sees
     the live status immediately (within `interval` seconds of starting),
     not after waiting for the rate limiter to allow it.
+
+    ALWAYS-FORCE: after the v12 fix, the ticker ALWAYS uses force=True.
+    This is critical: milestone status_callbacks (FloodWait, errors) also
+    force-edit and reset last_edit_time. If the ticker used force=False,
+    a milestone edit within the last 1.5s would BLOCK the ticker's edit
+    and the message would look frozen. With force=True, the ticker ALWAYS
+    edits — the 2s interval is safe for Telegram's rate limit, and the
+    status_lock serializes concurrent edits so there's no race.
     """
-    first_tick = True
     while True:
         try:
             await asyncio.sleep(interval)
@@ -1232,13 +1239,12 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
                     pass
                 break
             try:
-                # First tick: force the edit so the user sees the live
-                # status immediately. Subsequent ticks use force=False
-                # and rely on the rate limiter + the changing clock text.
+                # Always force=True so milestone status_callback edits
+                # (which reset last_edit_time) can NEVER block the ticker.
+                # The 2s interval is safe for Telegram's rate limit.
                 await edit_fn(_build_scrape_live_text(context, started_at,
                                                       job=job),
-                              force=first_tick)
-                first_tick = False
+                              force=True)
             except Exception:
                 pass
         except asyncio.CancelledError:

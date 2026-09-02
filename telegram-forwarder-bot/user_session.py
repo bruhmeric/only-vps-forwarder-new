@@ -2507,19 +2507,20 @@ class UserSession:
                 except Exception:
                     pass
 
-            # Periodic status update
-            now = _time.time()
-            if status_callback and now - last_status_time > status_interval:
-                last_status_time = now
-                await status_callback(
-                    f"📊 Scraping in progress...\n\n"
-                    f"Total seen: {result['total_seen']}\n"
-                    f"Sent: {result['sent_count']}\n"
-                    f"Failed: {result['failed_count']}\n"
-                    f"Skipped: {result['skipped_count']}\n"
-                    f"Last msg ID: {result['last_message_id']}\n"
-                    f"Parallel sends: {parallel}"
-                )
+            # NOTE: the periodic "📊 Scraping in progress..." status_callback
+            # that used to fire here every 1s has been REMOVED. It conflicted
+            # with the 2s status ticker in admin.py: each force-edit reset
+            # last_edit_time, which blocked the ticker's non-force edits
+            # (the rate limiter skips edits within 1.5s of the last one).
+            # The result: the bot message showed the static
+            # "📊 Scraping in progress..." text and NEVER updated with the
+            # live ticker (clock, progress bar, in-flight count) — even
+            # though the dashboard (which reads job["status"] directly)
+            # showed live progress. The ticker is now the SOLE editor of
+            # the status message; stats_callback (which fires per-message
+            # and per-batch) updates job["status"] for the ticker to render.
+            # Milestone status_callbacks (FloodWait, errors, completion)
+            # still force-edit and are NOT affected.
 
             if stats_callback:
                 try:
@@ -2900,24 +2901,12 @@ class UserSession:
                 except Exception:
                     pass
 
-            # Periodic status update
-            now = _time.time()
-            if status_callback and now - last_status_time > status_interval:
-                last_status_time = now
-                elapsed = now - result["started_at"]
-                throughput = result["sent_count"] / (elapsed / 60) if elapsed > 1 else 0
-                pct = (result["sent_count"] / result["total_seen"] * 100) if result["total_seen"] > 0 else 0
-                await status_callback(
-                    f"📊 ID-based forward in progress...\n\n"
-                    f"Current ID: {batch_end} / {end_id}\n"
-                    f"Sent: {result['sent_count']}\n"
-                    f"Failed: {result['failed_count']}\n"
-                    f"Flood waits: {result['flood_waits']}\n"
-                    f"Progress: {pct:.1f}%\n"
-                    f"Speed: {throughput:.0f} items/min\n"
-                    f"Batch delay: {send_pacer.current:.1f}s (adaptive)\n"
-                    f"Elapsed: {elapsed:.0f}s"
-                )
+            # NOTE: the periodic "📊 ID-based forward in progress..."
+            # status_callback that used to fire here has been REMOVED —
+            # same reason as scrape_channel (it conflicted with the 2s
+            # status ticker in admin.py by force-editing every 2s and
+            # blocking the ticker's non-force edits via the rate limiter).
+            # The ticker is now the SOLE editor of the status message.
 
             current_id = batch_end + 1
 
@@ -3280,27 +3269,11 @@ class UserSession:
                 except Exception:
                     pass
 
-            # Periodic status update — mirrors the fast path.
-            now = _time.time()
-            if status_callback and now - last_status_time > status_interval:
-                last_status_time = now
-                elapsed = now - result["started_at"]
-                throughput = (result["sent_count"] / (elapsed / 60)
-                              if elapsed > 1 else 0)
-                pct = (result["sent_count"] / result["total_seen"] * 100
-                       if result["total_seen"] > 0 else 0)
-                await status_callback(
-                    f"🧹 CLEAN forward in progress...\n\n"
-                    f"Current ID: {batch_end} / {end_id}\n"
-                    f"Sent: {result['sent_count']}\n"
-                    f"Failed: {result['failed_count']}\n"
-                    f"Skipped: {result['skipped_count']}\n"
-                    f"Flood waits: {result['flood_waits']}\n"
-                    f"Progress: {pct:.1f}%\n"
-                    f"Speed: {throughput:.0f} items/min\n"
-                    f"Batch delay: {send_pacer.current:.1f}s (adaptive)\n"
-                    f"Elapsed: {elapsed:.0f}s"
-                )
+            # NOTE: the periodic "🧹 CLEAN forward in progress..."
+            # status_callback that used to fire here has been REMOVED —
+            # same reason as the other paths (it conflicted with the 2s
+            # status ticker in admin.py). The ticker is now the SOLE
+            # editor of the status message.
 
             current_id = batch_end + 1
 
