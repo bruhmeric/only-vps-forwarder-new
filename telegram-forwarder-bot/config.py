@@ -96,28 +96,7 @@ from typing import Optional
 # "📈 Status ticker started for job X" at startup and "📈 ticker tick
 # #N" for the first 3 successful edits — so the user can verify the
 # ticker is running and edits are succeeding by checking docker logs.
-#
-# v15: REAL FIX for "progress updates not shown in bot messages, only
-# in dashboard". The v14 diagnostics finally exposed the actual cause:
-# PTB v21's `telegram.error.RetryAfter` exception carries the message
-# "Flood control exceeded. Retry in N seconds" — NOT "Too many requests.
-# Retry after N seconds" (which the old substring check looked for).
-# So when Telegram rate-limited the editMessageText call:
-#   1. The exception was NOT recognized as a rate-limit
-#   2. NO backoff was applied (last_edit_time was NOT pushed into the future)
-#   3. The ticker kept calling edit_text every 2s with force=True
-#   4. Every edit hit the 429 again → message NEVER updated, but the
-#      dashboard (which polls /stats, no Telegram API calls) kept
-#      showing live progress.
-# Fix: (1) detect RetryAfter by exception TYPE (telegram.error.RetryAfter)
-# AND by the new substrings "retry in" / "flood control"; (2) use the
-# server-provided retry_after (e.retry_after) as the backoff duration
-# instead of a fixed 3s; (3) split the rate-limit backoff
-# (`rate_limit_until`) from the 1.5s dedup (`last_edit_time`) — the
-# backoff is ALWAYS respected even when force=True (force only bypasses
-# the dedup so milestone edits don't block the ticker; a real 429 must
-# always wait, or we just re-trigger the 429 every tick).
-CODE_VERSION = "v15"
+CODE_VERSION = "v14"
 
 try:
     from dotenv import load_dotenv

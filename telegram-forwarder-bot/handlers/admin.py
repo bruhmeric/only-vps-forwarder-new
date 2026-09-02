@@ -1246,20 +1246,16 @@ async def _run_scrape_status_ticker(context, edit_fn, started_at: float,
                 # Always force=True so milestone status_callback edits
                 # (which reset last_edit_time) can NEVER block the ticker.
                 # The 2s interval is safe for Telegram's rate limit.
-                edit_ok = await edit_fn(_build_scrape_live_text(context, started_at,
+                await edit_fn(_build_scrape_live_text(context, started_at,
                                                       job=job),
                               force=True)
                 _tick_count += 1
                 # Log the first 3 ticks so the user can verify the ticker
-                # is running and see what text it generates. edit_fn returns
-                # False when the edit was skipped (rate-limit backoff or
-                # "not modified") — surface that so the log isn't misleading.
+                # is running and see what text it generates.
                 if _tick_count <= 3:
-                    status_label = "edit OK" if edit_ok else "edit skipped (rate-limited or unchanged)"
-                    logger.info("📈 ticker tick #%d for job %s — %s",
+                    logger.info("📈 ticker tick #%d for job %s — edit OK",
                                 _tick_count,
-                                job.get("job_id") if job else "?",
-                                status_label)
+                                job.get("job_id") if job else "?")
             except Exception as e:
                 # CRITICAL: this was a bare `except Exception: pass` which
                 # silently swallowed ALL errors — the user would see nothing
@@ -1564,54 +1560,15 @@ async def cmd_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     import asyncio as _asyncio
     status_lock = _asyncio.Lock()
     last_edit_time = {"time": 0.0}
-    # NEW: hard deadline for "we are being rate-limited by Telegram, do
-    # not edit until this epoch has passed". The 1.5s dedup check
-    # (`last_edit_time`) is bypassed by force=True so milestone edits
-    # don't block the ticker; this one is NEVER bypassed — it represents
-    # the server's word that we are being rate-limited and must wait.
-    # Without it the ticker would re-trigger the 429 every 2s and the
-    # message would stay frozen while the dashboard (which doesn't call
-    # Telegram) showed live progress.
-    rate_limit_until = {"time": 0.0}
     last_displayed = {"sent": -1, "in_flight": -1, "total_seen": -1}
     ticker_task_ref = {"task": None}
     started_at = time.time()
 
     async def _edit_telegram_message_safe(text: str, force: bool = False):
         """Edit the Telegram status message with a lock to prevent
-        concurrent edit calls. Returns True if edited.
-
-        CRITICAL FIX: Telegram's `RetryAfter` exception in PTB v21 has the
-        message "Flood control exceeded. Retry in N seconds" — NOT "Too
-        many requests. Retry after N seconds" (which the old code checked
-        for). The old check never matched, so when Telegram rate-limited
-        the editMessageText call:
-          1. The exception was NOT recognized as a rate-limit
-          2. NO backoff was applied
-          3. The ticker kept calling edit_text every 2s with force=True
-          4. Every edit hit the rate limit again -> the message NEVER
-             updated, while the dashboard (which polls /stats, no Telegram
-             API calls) kept showing live progress.
-        Fix: detect RetryAfter by exception type (telegram.error.RetryAfter)
-        AND by message substrings, then apply a real backoff using the
-        server-provided retry_after value. The backoff is respected even
-        when force=True (force only bypasses the 1.5s dedup check, NOT the
-        rate-limit backoff — otherwise we'd hammer Telegram and stay
-        rate-limited forever)."""
-        # Lazy import so the module loads even if PTB reshuffles error paths
-        try:
-            from telegram.error import RetryAfter as _PTBRetryAfter
-        except Exception:  # pragma: no cover
-            _PTBRetryAfter = None
+        concurrent edit calls. Returns True if edited."""
         async with status_lock:
             now = time.time()
-            # ALWAYS respect the rate-limit backoff — even when force=True.
-            # force=True only bypasses the 1.5s dedup check (so milestone
-            # status_callback edits don't block the ticker); it must NOT
-            # bypass a real Telegram 429 backoff or we re-trigger the limit
-            # on every tick and the message never updates.
-            if now < rate_limit_until["time"]:
-                return False
             if not force and now - last_edit_time["time"] < 1.5:
                 return False
             last_edit_time["time"] = now
@@ -1620,32 +1577,11 @@ async def cmd_scrape(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 return True
             except Exception as e:
                 err_str = str(e).lower()
-                is_retry_after = (
-                    (_PTBRetryAfter is not None and isinstance(e, _PTBRetryAfter))
-                    or "too many requests" in err_str
-                    or "retry after" in err_str
-                    or "retry in" in err_str
-                    or "flood control" in err_str
-                )
                 if "not modified" in err_str:
-                    # Text identical to current message — not an error, skip silently
                     pass
-                elif is_retry_after:
-                    # Use the server-provided retry_after when available;
-                    # fall back to a safe 5s otherwise. Add a 1s buffer so
-                    # we don't race the server's clock.
-                    retry_after = getattr(e, "retry_after", None)
-                    try:
-                        retry_after = int(retry_after) if retry_after else 5
-                    except (TypeError, ValueError):
-                        retry_after = 5
-                    retry_after = max(2, min(retry_after + 1, 60))
-                    logger.warning(
-                        "status: rate-limited edit; backing off %ds (server asked %ss)",
-                        retry_after, getattr(e, "retry_after", "?"),
-                    )
-                    rate_limit_until["time"] = now + retry_after
-                    last_edit_time["time"] = now  # don't trip the 1.5s dedup
+                elif "too many requests" in err_str or "retry after" in err_str:
+                    logger.warning("status: rate-limited edit; backing off 3s")
+                    last_edit_time["time"] = now + 3.0
                 else:
                     logger.warning("status: edit_text failed: %s: %s", type(e).__name__, e)
                 return False
@@ -2524,39 +2460,13 @@ async def cmd_scrapeid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # ticker's live text (which includes the wait phase) follows 2s later.
     status_lock = asyncio.Lock()
     last_edit_time = {"time": 0.0}
-    # NEW (mirrors /scrape): hard rate-limit deadline. PTB v21's
-    # RetryAfter carries the message "Flood control exceeded. Retry in
-    # N seconds" — the OLD code checked for "too many requests" /
-    # "retry after", which never matched, so the backoff was never
-    # applied and the ticker kept re-triggering the 429 every 2s. The
-    # message stayed frozen while the dashboard showed live progress.
-    rate_limit_until = {"time": 0.0}
     ticker_task_ref = {"task": None}
     started_at = _time.time()
 
     async def _edit_status(text, force=False):
-        """Locked, rate-limit-aware edit of the status message.
-
-        Mirrors /scrape's _edit_telegram_message_safe. Two changes vs the
-        old version:
-          1. RetryAfter is detected by exception TYPE (PTB v21's message is
-             "Flood control exceeded. Retry in N seconds", not "Too many
-             requests. Retry after N seconds" — so the old substring check
-             never matched).
-          2. The rate-limit backoff is now respected even when force=True.
-             force only bypasses the 1.5s dedup; a real 429 must always
-             wait, or we just re-trigger the 429 every tick and the
-             message never updates.
-        """
-        try:
-            from telegram.error import RetryAfter as _PTBRetryAfter
-        except Exception:  # pragma: no cover
-            _PTBRetryAfter = None
+        """Locked, rate-limit-aware edit of the status message."""
         async with status_lock:
             now = _time.time()
-            # ALWAYS respect the rate-limit backoff — even when force=True.
-            if now < rate_limit_until["time"]:
-                return
             if not force and now - last_edit_time["time"] < 1.5:
                 return
             last_edit_time["time"] = now
@@ -2564,28 +2474,12 @@ async def cmd_scrapeid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await status_msg.edit_text(text)
             except Exception as e:
                 err_str = str(e).lower()
-                is_retry_after = (
-                    (_PTBRetryAfter is not None and isinstance(e, _PTBRetryAfter))
-                    or "too many requests" in err_str
-                    or "retry after" in err_str
-                    or "retry in" in err_str
-                    or "flood control" in err_str
-                )
                 if "not modified" in err_str:
                     pass
-                elif is_retry_after:
-                    retry_after = getattr(e, "retry_after", None)
-                    try:
-                        retry_after = int(retry_after) if retry_after else 5
-                    except (TypeError, ValueError):
-                        retry_after = 5
-                    retry_after = max(2, min(retry_after + 1, 60))
-                    logger.warning(
-                        "status: rate-limited edit; backing off %ds (server asked %ss)",
-                        retry_after, getattr(e, "retry_after", "?"),
-                    )
-                    rate_limit_until["time"] = now + retry_after
-                    last_edit_time["time"] = now
+                elif "too many requests" in err_str or "retry after" in err_str:
+                    # Back off — editing too fast; ticker will catch up
+                    last_edit_time["time"] = now + 3.0
+                    logger.warning("status: rate-limited edit; backing off 3s")
                 else:
                     # CRITICAL: this was previously a bare silent swallow —
                     # the user would see NOTHING in docker logs when the
